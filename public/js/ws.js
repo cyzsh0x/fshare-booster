@@ -1,3 +1,12 @@
+// Global variables
+let activeSessions = [];
+let stats = { totalShares: 0, successRate: 0 };
+let ws;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const RECONNECT_DELAY = 3000;
+const POLL_INTERVAL = 5000;
+
 // Initialize WebSocket connection
 function initWebSocket() {
     ws = new WebSocket(`wss://${window.location.host}`);
