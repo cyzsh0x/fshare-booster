@@ -12,14 +12,30 @@ const SESSION_FILE = path.join(__dirname, 'sessions.json');
 const SESSION_BACKUP_FILE = path.join(__dirname, 'sessions_backup.json');
 const SESSION_LOCK_FILE = path.join(__dirname, 'sessions.lock');
 const BACKUP_INTERVAL = 1000 * 60 * 1; // 1 minute
-const REQUIRED_HEADER = 'X-Daemon'; // Custom header for API protection
-const HEADER_VALUE = 'DaemonCyzsh'; // Expected value for the header
+const REQUIRED_HEADER = process.env.RH; // Custom header for API protection
+const HEADER_VALUE = process.env.HV; // Expected value for the header
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
 const wss = new WebSocket.Server({ server });
+
+// Track all connected clients
+const clients = new Set();
+
+wss.on('connection', (ws) => {
+  clients.add(ws);
+  console.log('New WebSocket client connected');
+  
+  // Immediately send current state to new client
+  broadcastActiveSessions();
+  
+  ws.on('close', () => {
+    clients.delete(ws);
+    console.log('WebSocket client disconnected');
+  });
+});
 
 app.use(cors());
 app.use(express.json());
@@ -31,7 +47,7 @@ function checkHeader(req, res, next) {
   if (req.headers[REQUIRED_HEADER.toLowerCase()] !== HEADER_VALUE) {
     return res.status(403).json({ 
       error: 'Forbidden',
-      message: 'Missing required header'
+      message: 'Missing required headers. You cannot use my API, skid!'
     });
   }
   next();
@@ -42,18 +58,15 @@ async function initializeSessionStore() {
   try {
     await fs.access(SESSION_FILE);
     
-    // Verify the file is valid JSON
     const data = await fs.readFile(SESSION_FILE, 'utf8');
     JSON.parse(data);
     
-    // Create backup if it doesn't exist
     try {
       await fs.access(SESSION_BACKUP_FILE);
     } catch {
       await fs.copyFile(SESSION_FILE, SESSION_BACKUP_FILE);
     }
   } catch (error) {
-    // If main file is corrupted, try to restore from backup
     try {
       await fs.access(SESSION_BACKUP_FILE);
       const backupData = await fs.readFile(SESSION_BACKUP_FILE, 'utf8');
@@ -61,13 +74,11 @@ async function initializeSessionStore() {
       await fs.writeFile(SESSION_FILE, backupData);
       console.log('Restored sessions from backup');
     } catch (backupError) {
-      // If both files are bad, start fresh
       await fs.writeFile(SESSION_FILE, JSON.stringify({}));
       console.log('Created new empty sessions file');
     }
   }
   
-  // Setup periodic backups
   setInterval(async () => {
     try {
       const data = await fs.readFile(SESSION_FILE, 'utf8');
@@ -87,12 +98,10 @@ async function readSessions() {
     const data = await fs.readFile(SESSION_FILE, 'utf8');
     const sessions = JSON.parse(data);
     
-    // Validate the structure
     if (typeof sessions !== 'object' || sessions === null) {
       throw new Error('Invalid sessions format');
     }
     
-    // Clean up old sessions (older than 7 days)
     const now = Date.now();
     const sevenDays = 1000 * 60 * 60 * 24 * 7;
     let cleaned = false;
@@ -112,7 +121,6 @@ async function readSessions() {
   } catch (error) {
     console.error('Error reading sessions:', error);
     
-    // Try to restore from backup
     try {
       const backupData = await fs.readFile(SESSION_BACKUP_FILE, 'utf8');
       const sessions = JSON.parse(backupData);
@@ -126,33 +134,25 @@ async function readSessions() {
 }
 
 async function writeSessions(sessions) {
-  // Create a lock file to prevent concurrent writes
   let lockAcquired = false;
   try {
-    // Try to create lock file with exclusive flag
     const lockHandle = await fs.open(SESSION_LOCK_FILE, 'wx');
     await lockHandle.close();
     lockAcquired = true;
     
-    // Validate sessions data
     if (typeof sessions !== 'object' || sessions === null) {
       throw new Error('Invalid sessions data');
     }
     
-    // Write to temporary file first
     const tempFile = SESSION_FILE + '.tmp';
     await fs.writeFile(tempFile, JSON.stringify(sessions, null, 2));
-    
-    // Atomic rename operation
     await fs.rename(tempFile, SESSION_FILE);
   } catch (error) {
     console.error('Error writing sessions:', error);
     
-    // If we have the lock but failed to write, try to restore from memory
     if (lockAcquired) {
       try {
         const currentData = await fs.readFile(SESSION_FILE, 'utf8');
-        // If file is empty/corrupted, try to write again
         if (!currentData || currentData.trim() === '') {
           await fs.writeFile(SESSION_FILE, JSON.stringify(sessions, null, 2));
         }
@@ -161,7 +161,6 @@ async function writeSessions(sessions) {
       }
     }
   } finally {
-    // Release the lock
     if (lockAcquired) {
       try {
         await fs.unlink(SESSION_LOCK_FILE);
@@ -193,7 +192,7 @@ async function broadcastActiveSessions() {
         completed: session.completedShares || 0,
         failed: session.failedShares || 0,
         successRate: session.completedShares > 0 ? 
-          Math.round((session.completedShares / (session.completedShares + (session.failedShares || 0)) * 100)) : 0,
+          Math.round((session.completedShares / (session.completedShares + (session.failedShares || 0))) * 100) : 0,
         startedAt: session.createdAt,
         estimatedTime: estimatedTime < Infinity ? 
           formatTime(estimatedTime) : 'Calculating...'
@@ -216,7 +215,7 @@ async function broadcastActiveSessions() {
     }
   };
 
-  wss.clients.forEach(client => {
+  clients.forEach(client => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(JSON.stringify(message));
     }
@@ -446,11 +445,60 @@ function apiResponse(res, status, message, data = null) {
   return res.status(status).json(response);
 }
 
+// Routes
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Protected API endpoints
+app.get("/api/v1/initial-data", checkHeader, async (req, res) => {
+  try {
+    const sessions = await readSessions();
+    const now = Date.now();
+    
+    const activeSessions = Object.entries(sessions)
+      .filter(([_, session]) => ['started', 'in_progress'].includes(session.status))
+      .map(([id, session]) => {
+        const elapsedSeconds = (now - new Date(session.createdAt).getTime()) / 1000;
+        const sharesPerSecond = session.completedShares / elapsedSeconds;
+        const remainingShares = session.totalShares - (session.completedShares || 0);
+        const estimatedTime = sharesPerSecond > 0 ? remainingShares / sharesPerSecond : Infinity;
+
+        return {
+          id,
+          shortId: id.slice(-4),
+          url: session.url,
+          amount: session.totalShares,
+          interval: session.interval,
+          completed: session.completedShares || 0,
+          failed: session.failedShares || 0,
+          successRate: session.completedShares > 0 ? 
+            Math.round((session.completedShares / (session.completedShares + (session.failedShares || 0))) * 100) : 0,
+          startedAt: session.createdAt,
+          estimatedTime: estimatedTime < Infinity ? 
+            formatTime(estimatedTime) : 'Calculating...'
+        };
+      });
+
+    const totalShares = Object.values(sessions).reduce((sum, s) => sum + (s.completedShares || 0), 0);
+    const totalFailed = Object.values(sessions).reduce((sum, s) => sum + (s.failedShares || 0), 0);
+    const successRate = totalShares > 0 ? 
+      Math.round((totalShares / (totalShares + totalFailed)) * 100) : 0;
+
+    res.json({
+      data: {
+        activeSessions,
+        stats: {
+          totalShares,
+          successRate
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching initial data:', error);
+    res.status(500).json({ error: 'Failed to fetch initial data' });
+  }
+});
+
 app.post("/api/v1/submit", checkHeader, async (req, res) => {
   try {
     const { cookie, url, amount, interval } = req.body;
@@ -513,43 +561,10 @@ app.post("/api/v1/submit", checkHeader, async (req, res) => {
   }
 });
 
-app.get("/api/v1/total-sessions", checkHeader, async (req, res) => {
-  try {
-    const sessions = await readSessions();
-    const activeSessions = Object.entries(sessions)
-      .filter(([_, session]) => ['started', 'in_progress'].includes(session.status))
-      .map(([id, session]) => ({
-        id,
-        shortId: id.slice(-4),
-        url: session.url,
-        amount: session.totalShares,
-        interval: session.interval,
-        completed: session.completedShares || 0,
-        failed: session.failedShares || 0,
-        status: session.status
-      }));
-
-    res.json({
-      data: {
-        activeSessions,
-        totalShares: Object.values(sessions).reduce((sum, s) => sum + (s.completedShares || 0), 0),
-        successRate: activeSessions.reduce((rate, s) => {
-          const total = s.completed + s.failed;
-          return total > 0 ? rate + (s.completed / total) : rate;
-        }, 0) / (activeSessions.length || 1) * 100
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching sessions:', error);
-    res.status(500).json({ error: 'Failed to fetch sessions' });
-  }
-});
-
 // Session cleanup on startup
 initializeSessionStore().then(async () => {
   console.log('Session store initialized');
   
-  // Clean up any in-progress sessions on startup
   const sessions = await readSessions();
   let needsUpdate = false;
   
@@ -566,11 +581,11 @@ initializeSessionStore().then(async () => {
   }
 });
 
-// Error handling for persistence
+// Error handling
 process.on('uncaughtException', async (error) => {
   console.error('Uncaught exception:', error);
   try {
-    await writeSessions(await readSessions()); // Force a save
+    await writeSessions(await readSessions());
   } catch (e) {
     console.error('Failed to save sessions during crash:', e);
   }
