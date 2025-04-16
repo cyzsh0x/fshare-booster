@@ -193,7 +193,7 @@ async function broadcastActiveSessions() {
         completed: session.completedShares || 0,
         failed: session.failedShares || 0,
         successRate: session.completedShares > 0 ? 
-          Math.round((session.completedShares / (session.completedShares + (session.failedShares || 0)) * 100) : 0,
+          Math.round((session.completedShares / (session.completedShares + (session.failedShares || 0)) * 100)) : 0,
         startedAt: session.createdAt,
         estimatedTime: estimatedTime < Infinity ? 
           formatTime(estimatedTime) : 'Calculating...'
