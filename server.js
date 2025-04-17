@@ -21,6 +21,7 @@ const app = express();
 const BACKUP_INTERVAL = 1000 * 60 * 1; // 1 minute
 const REQUIRED_HEADER = process.env.RH; // Custom header for API protection
 const HEADER_VALUE = process.env.HV; // Expected value for the header
+const MAX_CONSECUTIVE_FAILURES = 10; // Maximum allowed consecutive failures
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
@@ -61,10 +62,20 @@ function generateSessionId() {
 }
 
 async function getNextSessionNumber() {
-  const snapshot = await counterRef.transaction(current => {
-    return (current || 0) + 1;
-  });
-  return snapshot.snapshot.val();
+  const snapshot = await counterRef.once('value');
+  const currentValue = snapshot.val();
+  
+  // If no sessions exist, reset counter to 0 first
+  const sessions = await readSessions();
+  if (Object.keys(sessions).length === 0 && currentValue !== 0) {
+    await counterRef.set(0);
+    return 1;
+  }
+  
+  // Otherwise increment normally
+  const newValue = (currentValue || 0) + 1;
+  await counterRef.set(newValue);
+  return newValue;
 }
 
 async function readSessions() {
@@ -308,6 +319,7 @@ async function shareInBackground(sessionId, cookie, url, amount, interval) {
 
     let successCount = 0;
     let failedCount = 0;
+    let consecutiveFailures = 0;
     const maxRetries = 3;
 
     await saveProgress(sessionId, { status: 'in_progress' });
@@ -323,8 +335,28 @@ async function shareInBackground(sessionId, cookie, url, amount, interval) {
 
       if (success) {
         successCount++;
+        consecutiveFailures = 0; // Reset consecutive failures counter
       } else {
         failedCount++;
+        consecutiveFailures++;
+        
+        // Check for consecutive failures
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          console.log(`Session ${sessionId} reached ${MAX_CONSECUTIVE_FAILURES} consecutive failures - terminating`);
+          await saveProgress(sessionId, {
+            status: 'failed',
+            error: `Terminated due to ${MAX_CONSECUTIVE_FAILURES} consecutive failures`,
+            completedShares: successCount,
+            failedShares: failedCount
+          });
+          
+          // Remove the session from Firebase
+          const sessions = await readSessions();
+          delete sessions[sessionId];
+          await writeSessions(sessions);
+          await broadcastActiveSessions();
+          return;
+        }
       }
 
       await saveProgress(sessionId, {
@@ -422,7 +454,7 @@ app.post("/api/v1/submit", checkHeader, async (req, res) => {
         typeof url !== 'string' || 
         typeof amount !== 'number' || 
         typeof interval !== 'number') {
-      return apiResponse(res, 400, "Invalid parameter types. Expected: cookie(string), url(string), amount(number), interval(number)");
+      return apiResponse(res, 400, "Invalid parameter types. Expected: cookie(string), url(string), amount(number), interval(number)"));
     }
 
     const requiredCookieKeys = ['xs=', 'c_user=', 'fr=', 'datr='];
@@ -500,6 +532,16 @@ app.post("/api/v1/submit", checkHeader, async (req, res) => {
   
   if (needsUpdate) {
     await writeSessions(sessions);
+  }
+
+  // Check if we need to reset session counter when no sessions exist
+  const sessionCount = Object.keys(sessions).length;
+  if (sessionCount === 0) {
+    const counterSnapshot = await counterRef.once('value');
+    if (counterSnapshot.val() !== 0) {
+      await counterRef.set(0);
+      console.log('Reset session counter to 0 as no sessions exist');
+    }
   }
 })();
 
