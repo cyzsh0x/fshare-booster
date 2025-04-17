@@ -1,6 +1,9 @@
 module.exports = {
   darkMode: 'class',
-  content: ["./src/**/*.{html,js}"], // Add all your template files
+  content: [
+    "./public/**/*.html",    // Scans all HTML files in /public
+    "./public/js/**/*.js"    // Scans all JS files in /public/js
+  ],
   theme: {
     extend: {
       fontFamily: {
