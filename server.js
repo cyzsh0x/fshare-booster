@@ -45,6 +45,16 @@ app.use(express.json());
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+function checkHeader(req, res, next) {
+  if (req.headers[REQUIRED_HEADER.toLowerCase()] !== HEADER_VALUE) {
+    return res.status(403).json({ 
+      error: 'Forbidden',
+      message: 'You can\'t use the API. This is to avoid the abuse of the API.'
+    });
+  }
+  next();
+}
+
 // Helper functions
 function generateSessionId() {
   return Math.floor(100000 + Math.random() * 900000).toString();
