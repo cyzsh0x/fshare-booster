@@ -3,14 +3,20 @@ const bodyParser = require('body-parser');
 const path = require('path');
 const cors = require('cors');
 const axios = require('axios');
-const fs = require('fs').promises;
 const WebSocket = require('ws');
+const admin = require('firebase-admin');
+
+// Initialize Firebase
+const serviceAccount = require('./fshareKey.json');
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: "https://fshare-booster-default-rtdb.firebaseio.com/"
+});
+const db = admin.database();
+const sessionsRef = db.ref('sessions');
 
 const PORT = process.env.PORT || 11001;
 const app = express();
-const SESSION_FILE = path.join(__dirname, 'sessions.json');
-const SESSION_BACKUP_FILE = path.join(__dirname, 'sessions_backup.json');
-const SESSION_LOCK_FILE = path.join(__dirname, 'sessions.lock');
 const BACKUP_INTERVAL = 1000 * 60 * 1; // 1 minute
 const REQUIRED_HEADER = process.env.RH; // Custom header for API protection
 const HEADER_VALUE = process.env.HV; // Expected value for the header
@@ -53,121 +59,25 @@ function checkHeader(req, res, next) {
   next();
 }
 
-// Initialize sessions storage
-async function initializeSessionStore() {
-  try {
-    await fs.access(SESSION_FILE);
-    
-    const data = await fs.readFile(SESSION_FILE, 'utf8');
-    JSON.parse(data);
-    
-    try {
-      await fs.access(SESSION_BACKUP_FILE);
-    } catch {
-      await fs.copyFile(SESSION_FILE, SESSION_BACKUP_FILE);
-    }
-  } catch (error) {
-    try {
-      await fs.access(SESSION_BACKUP_FILE);
-      const backupData = await fs.readFile(SESSION_BACKUP_FILE, 'utf8');
-      JSON.parse(backupData);
-      await fs.writeFile(SESSION_FILE, backupData);
-      console.log('Restored sessions from backup');
-    } catch (backupError) {
-      await fs.writeFile(SESSION_FILE, JSON.stringify({}));
-      console.log('Created new empty sessions file');
-    }
-  }
-  
-  setInterval(async () => {
-    try {
-      const data = await fs.readFile(SESSION_FILE, 'utf8');
-      await fs.writeFile(SESSION_BACKUP_FILE, data);
-    } catch (error) {
-      console.error('Failed to create backup:', error);
-    }
-  }, BACKUP_INTERVAL);
-}
-
 function generateSessionId() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
 async function readSessions() {
   try {
-    const data = await fs.readFile(SESSION_FILE, 'utf8');
-    const sessions = JSON.parse(data);
-    
-    if (typeof sessions !== 'object' || sessions === null) {
-      throw new Error('Invalid sessions format');
-    }
-    
-    const now = Date.now();
-    const sevenDays = 1000 * 60 * 60 * 24 * 7;
-    let cleaned = false;
-    
-    for (const [id, session] of Object.entries(sessions)) {
-      if (session.createdAt && (now - new Date(session.createdAt).getTime() > sevenDays)) {
-        delete sessions[id];
-        cleaned = true;
-      }
-    }
-    
-    if (cleaned) {
-      await writeSessions(sessions);
-    }
-    
-    return sessions;
+    const snapshot = await sessionsRef.once('value');
+    return snapshot.val() || {};
   } catch (error) {
     console.error('Error reading sessions:', error);
-    
-    try {
-      const backupData = await fs.readFile(SESSION_BACKUP_FILE, 'utf8');
-      const sessions = JSON.parse(backupData);
-      await fs.writeFile(SESSION_FILE, backupData);
-      return sessions;
-    } catch (backupError) {
-      console.error('Failed to restore from backup:', backupError);
-      return {};
-    }
+    return {};
   }
 }
 
 async function writeSessions(sessions) {
-  let lockAcquired = false;
   try {
-    const lockHandle = await fs.open(SESSION_LOCK_FILE, 'wx');
-    await lockHandle.close();
-    lockAcquired = true;
-    
-    if (typeof sessions !== 'object' || sessions === null) {
-      throw new Error('Invalid sessions data');
-    }
-    
-    const tempFile = SESSION_FILE + '.tmp';
-    await fs.writeFile(tempFile, JSON.stringify(sessions, null, 2));
-    await fs.rename(tempFile, SESSION_FILE);
+    await sessionsRef.set(sessions);
   } catch (error) {
     console.error('Error writing sessions:', error);
-    
-    if (lockAcquired) {
-      try {
-        const currentData = await fs.readFile(SESSION_FILE, 'utf8');
-        if (!currentData || currentData.trim() === '') {
-          await fs.writeFile(SESSION_FILE, JSON.stringify(sessions, null, 2));
-        }
-      } catch (recoveryError) {
-        console.error('Failed to recover sessions file:', recoveryError);
-      }
-    }
-  } finally {
-    if (lockAcquired) {
-      try {
-        await fs.unlink(SESSION_LOCK_FILE);
-      } catch (cleanupError) {
-        console.error('Failed to remove lock file:', cleanupError);
-      }
-    }
   }
 }
 
@@ -438,7 +348,7 @@ function apiResponse(res, status, message, data = null) {
     data: {
       status: status,
       message: message,
-      createdBy: "CyZsh0x",
+      developer: "Koudex",
       ...data
     }
   };
@@ -561,9 +471,9 @@ app.post("/api/v1/submit", checkHeader, async (req, res) => {
   }
 });
 
-// Session cleanup on startup
-initializeSessionStore().then(async () => {
-  console.log('Session store initialized');
+// Initialize Firebase connection and clean up interrupted sessions
+(async () => {
+  console.log('Initializing Firebase session store');
   
   const sessions = await readSessions();
   let needsUpdate = false;
@@ -579,26 +489,16 @@ initializeSessionStore().then(async () => {
   if (needsUpdate) {
     await writeSessions(sessions);
   }
-});
+})();
 
 // Error handling
 process.on('uncaughtException', async (error) => {
   console.error('Uncaught exception:', error);
-  try {
-    await writeSessions(await readSessions());
-  } catch (e) {
-    console.error('Failed to save sessions during crash:', e);
-  }
   process.exit(1);
 });
 
 process.on('SIGINT', async () => {
   console.log('Server shutting down...');
-  try {
-    await writeSessions(await readSessions());
-  } catch (e) {
-    console.error('Failed to save sessions during shutdown:', e);
-  }
   process.exit();
 });
 
