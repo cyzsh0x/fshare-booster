@@ -154,3 +154,12 @@
     background: linear-gradient(90deg, #3b82f6, #8b5cf6);
     transition: width 0.3s ease;
 }
+
+.fade-out {
+    animation: fadeOut 0.3s ease forwards;
+}
+
+@keyframes fadeOut {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
