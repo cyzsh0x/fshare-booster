@@ -14,6 +14,7 @@ admin.initializeApp({
 });
 const db = admin.database();
 const sessionsRef = db.ref('sessions');
+const counterRef = db.ref('sessionCounter');
 
 const PORT = process.env.PORT || 11001;
 const app = express();
@@ -26,15 +27,11 @@ const server = app.listen(PORT, () => {
 });
 
 const wss = new WebSocket.Server({ server });
-
-// Track all connected clients
 const clients = new Set();
 
 wss.on('connection', (ws) => {
   clients.add(ws);
   console.log('New WebSocket client connected');
-  
-  // Immediately send current state to new client
   broadcastActiveSessions();
   
   ws.on('close', () => {
@@ -48,20 +45,16 @@ app.use(express.json());
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Middleware to check for required header
-function checkHeader(req, res, next) {
-  if (req.headers[REQUIRED_HEADER.toLowerCase()] !== HEADER_VALUE) {
-    return res.status(403).json({
-      status: 403,
-      error: 'Forbidden',
-      message: 'You can\'t use the API. This is to avoid the abuse of the API.'
-    });
-  }
-  next();
-}
-
+// Helper functions
 function generateSessionId() {
   return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+async function getNextSessionNumber() {
+  const snapshot = await counterRef.transaction(current => {
+    return (current || 0) + 1;
+  });
+  return snapshot.snapshot.val();
 }
 
 async function readSessions() {
@@ -82,12 +75,24 @@ async function writeSessions(sessions) {
   }
 }
 
+function formatTime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  return [
+    h > 0 ? `${h}h` : '',
+    m > 0 ? `${m}m` : '',
+    `${s}s`
+  ].filter(Boolean).join(' ');
+}
+
 async function broadcastActiveSessions() {
   const sessions = await readSessions();
   const now = Date.now();
   
   const activeSessions = Object.entries(sessions)
     .filter(([_, session]) => ['started', 'in_progress'].includes(session.status))
+    .sort((a, b) => a[1].sessionNumber - b[1].sessionNumber)
     .map(([id, session]) => {
       const elapsedSeconds = (now - new Date(session.createdAt).getTime()) / 1000;
       const sharesPerSecond = session.completedShares / elapsedSeconds;
@@ -96,14 +101,14 @@ async function broadcastActiveSessions() {
 
       return {
         id,
-        shortId: id.slice(-4),
+        sessionNumber: session.sessionNumber,
         url: session.url,
         amount: session.totalShares,
         interval: session.interval,
         completed: session.completedShares || 0,
         failed: session.failedShares || 0,
         successRate: session.completedShares > 0 ? 
-          ((session.completedShares / (session.completedShares + (session.failedShares || 0)) * 100).toFixed(2) : 0.00,
+          ((session.completedShares / (session.completedShares + (session.failedShares || 0))) * 100).toFixed(2) : '0.00',
         startedAt: session.createdAt,
         estimatedTime: estimatedTime < Infinity ? 
           formatTime(estimatedTime) : 'Calculating...'
@@ -113,7 +118,7 @@ async function broadcastActiveSessions() {
   const totalShares = Object.values(sessions).reduce((sum, s) => sum + (s.completedShares || 0), 0);
   const totalFailed = Object.values(sessions).reduce((sum, s) => sum + (s.failedShares || 0), 0);
   const successRate = totalShares > 0 ? 
-    Math.round((totalShares / (totalShares + totalFailed)) * 100) : 0;
+    ((totalShares / (totalShares + totalFailed)) * 100).toFixed(2) : '0.00';
 
   const message = {
     type: 'sessions_update',
@@ -131,18 +136,6 @@ async function broadcastActiveSessions() {
       client.send(JSON.stringify(message));
     }
   });
-}
-
-function formatTime(seconds) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  
-  return [
-    h > 0 ? `${h}h` : '',
-    m > 0 ? `${m}m` : '',
-    `${s}s`
-  ].filter(Boolean).join(' ');
 }
 
 async function saveProgress(sessionId, progress) {
@@ -164,7 +157,8 @@ async function saveProgress(sessionId, progress) {
     ...progress,
     lastUpdated: new Date().toISOString(),
     successRate: progress.completedShares > 0 ? 
-      ((progress.completedShares / (progress.completedShares + (progress.failedShares || 0)) * 100).toFixed(2) : 0.00
+      ((progress.completedShares / 
+        (progress.completedShares + (progress.failedShares || 0))) * 100).toFixed(2) : '0.00'
   };
   
   await writeSessions(sessions);
@@ -367,6 +361,7 @@ app.get("/api/v1/initial-data", checkHeader, async (req, res) => {
     
     const activeSessions = Object.entries(sessions)
       .filter(([_, session]) => ['started', 'in_progress'].includes(session.status))
+      .sort((a, b) => a[1].sessionNumber - b[1].sessionNumber)
       .map(([id, session]) => {
         const elapsedSeconds = (now - new Date(session.createdAt).getTime()) / 1000;
         const sharesPerSecond = session.completedShares / elapsedSeconds;
@@ -375,14 +370,14 @@ app.get("/api/v1/initial-data", checkHeader, async (req, res) => {
 
         return {
           id,
-          shortId: id.slice(-4),
+          sessionNumber: session.sessionNumber,
           url: session.url,
           amount: session.totalShares,
           interval: session.interval,
           completed: session.completedShares || 0,
           failed: session.failedShares || 0,
           successRate: session.completedShares > 0 ? 
-            ((session.completedShares / (session.completedShares + (session.failedShares || 0)) * 100).toFixed(2) : 0.00,
+            ((session.completedShares / (session.completedShares + (session.failedShares || 0))) * 100).toFixed(2) : '0.00',
           startedAt: session.createdAt,
           estimatedTime: estimatedTime < Infinity ? 
             formatTime(estimatedTime) : 'Calculating...'
@@ -392,7 +387,7 @@ app.get("/api/v1/initial-data", checkHeader, async (req, res) => {
     const totalShares = Object.values(sessions).reduce((sum, s) => sum + (s.completedShares || 0), 0);
     const totalFailed = Object.values(sessions).reduce((sum, s) => sum + (s.failedShares || 0), 0);
     const successRate = totalShares > 0 ? 
-      ((totalShares / (totalShares + totalFailed)) * 100).toFixed(2) : 0.00;
+      ((totalShares / (totalShares + totalFailed)) * 100).toFixed(2) : '0.00';
 
     res.json({
       data: {
@@ -434,22 +429,28 @@ app.post("/api/v1/submit", checkHeader, async (req, res) => {
       return apiResponse(res, 400, "Share amount must be at least 1 or greater than 0");
     }
 
-    if (interval < 1 || interval > 60) {
-      return apiResponse(res, 400, "Interval must be between 1 and 60 seconds");
+    if (interval < 0.1 || interval > 60) {
+      return apiResponse(res, 400, "Interval must be between 0.1 and 60 seconds");
+    }
+
+    if (interval < 1 && amount > 100) {
+      return apiResponse(res, 400, "For intervals below 1 second, maximum shares is 100");
     }
 
     const sessionId = generateSessionId();
+    const sessionNumber = await getNextSessionNumber();
 
     await saveProgress(sessionId, {
       status: 'started',
       totalShares: Math.floor(amount),
       completedShares: 0,
       url: url.trim(),
-      interval: Math.max(1, Math.min(60, interval)),
-      createdAt: new Date().toISOString()
+      interval: parseFloat(interval.toFixed(1)), // Ensures 1 decimal place
+      createdAt: new Date().toISOString(),
+      sessionNumber
     });
 
-    shareInBackground(sessionId, cookie, url, Math.floor(amount), Math.max(1, interval))
+    shareInBackground(sessionId, cookie, url, Math.floor(amount), parseFloat(interval.toFixed(1)))
       .catch(err => {
         console.error(`Background sharing error for session ${sessionId}:`, err);
         saveProgress(sessionId, {
@@ -460,7 +461,8 @@ app.post("/api/v1/submit", checkHeader, async (req, res) => {
       });
 
     return apiResponse(res, 200, "Sharing process started successfully", {
-      sessionId: sessionId
+      sessionId: sessionId,
+      sessionNumber: sessionNumber
     });
 
   } catch (error) {
@@ -471,7 +473,7 @@ app.post("/api/v1/submit", checkHeader, async (req, res) => {
   }
 });
 
-// Initialize Firebase connection and clean up interrupted sessions
+// Initialize server
 (async () => {
   console.log('Initializing Firebase session store');
   
