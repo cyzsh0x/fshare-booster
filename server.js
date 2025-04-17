@@ -103,7 +103,7 @@ async function broadcastActiveSessions() {
         completed: session.completedShares || 0,
         failed: session.failedShares || 0,
         successRate: session.completedShares > 0 ? 
-          (session.completedShares / (session.completedShares + (session.failedShares || 0)) * 100).toFixed(2) : 0.00,
+          ((session.completedShares / (session.completedShares + (session.failedShares || 0)) * 100).toFixed(2) : 0.00,
         startedAt: session.createdAt,
         estimatedTime: estimatedTime < Infinity ? 
           formatTime(estimatedTime) : 'Calculating...'
@@ -164,8 +164,7 @@ async function saveProgress(sessionId, progress) {
     ...progress,
     lastUpdated: new Date().toISOString(),
     successRate: progress.completedShares > 0 ? 
-      (progress.completedShares / 
-        (progress.completedShares + (progress.failedShares || 0)) * 100).toFixed(2) : 0.00
+      ((progress.completedShares / (progress.completedShares + (progress.failedShares || 0)) * 100).toFixed(2) : 0.00
   };
   
   await writeSessions(sessions);
@@ -383,7 +382,7 @@ app.get("/api/v1/initial-data", checkHeader, async (req, res) => {
           completed: session.completedShares || 0,
           failed: session.failedShares || 0,
           successRate: session.completedShares > 0 ? 
-            (session.completedShares / (session.completedShares + (session.failedShares || 0)) * 100).toFixed(2) : 0.00,
+            ((session.completedShares / (session.completedShares + (session.failedShares || 0)) * 100).toFixed(2) : 0.00,
           startedAt: session.createdAt,
           estimatedTime: estimatedTime < Infinity ? 
             formatTime(estimatedTime) : 'Calculating...'
@@ -393,7 +392,7 @@ app.get("/api/v1/initial-data", checkHeader, async (req, res) => {
     const totalShares = Object.values(sessions).reduce((sum, s) => sum + (s.completedShares || 0), 0);
     const totalFailed = Object.values(sessions).reduce((sum, s) => sum + (s.failedShares || 0), 0);
     const successRate = totalShares > 0 ? 
-      (totalShares / (totalShares + totalFailed)) * 100).toFixed(2) : 0.00;
+      ((totalShares / (totalShares + totalFailed)) * 100).toFixed(2) : 0.00;
 
     res.json({
       data: {
