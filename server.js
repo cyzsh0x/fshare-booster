@@ -51,9 +51,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Middleware to check for required header
 function checkHeader(req, res, next) {
   if (req.headers[REQUIRED_HEADER.toLowerCase()] !== HEADER_VALUE) {
-    return res.status(403).json({ 
+    return res.status(403).json({
+      status: 403,
       error: 'Forbidden',
-      message: 'Missing required headers. You cannot use my API, skid!'
+      message: 'You can\'t use the API. This is to avoid the abuse of the API.'
     });
   }
   next();
@@ -102,7 +103,7 @@ async function broadcastActiveSessions() {
         completed: session.completedShares || 0,
         failed: session.failedShares || 0,
         successRate: session.completedShares > 0 ? 
-          Math.round((session.completedShares / (session.completedShares + (session.failedShares || 0))) * 100) : 0,
+          (session.completedShares / (session.completedShares + (session.failedShares || 0)) * 100).toFixed(2) : 0.00,
         startedAt: session.createdAt,
         estimatedTime: estimatedTime < Infinity ? 
           formatTime(estimatedTime) : 'Calculating...'
@@ -163,8 +164,8 @@ async function saveProgress(sessionId, progress) {
     ...progress,
     lastUpdated: new Date().toISOString(),
     successRate: progress.completedShares > 0 ? 
-      Math.round((progress.completedShares / 
-        (progress.completedShares + (progress.failedShares || 0))) * 100) : 0
+      (progress.completedShares / 
+        (progress.completedShares + (progress.failedShares || 0)) * 100).toFixed(2) : 0.00
   };
   
   await writeSessions(sessions);
@@ -382,7 +383,7 @@ app.get("/api/v1/initial-data", checkHeader, async (req, res) => {
           completed: session.completedShares || 0,
           failed: session.failedShares || 0,
           successRate: session.completedShares > 0 ? 
-            Math.round((session.completedShares / (session.completedShares + (session.failedShares || 0))) * 100) : 0,
+            (session.completedShares / (session.completedShares + (session.failedShares || 0)) * 100).toFixed(2) : 0.00,
           startedAt: session.createdAt,
           estimatedTime: estimatedTime < Infinity ? 
             formatTime(estimatedTime) : 'Calculating...'
@@ -392,7 +393,7 @@ app.get("/api/v1/initial-data", checkHeader, async (req, res) => {
     const totalShares = Object.values(sessions).reduce((sum, s) => sum + (s.completedShares || 0), 0);
     const totalFailed = Object.values(sessions).reduce((sum, s) => sum + (s.failedShares || 0), 0);
     const successRate = totalShares > 0 ? 
-      Math.round((totalShares / (totalShares + totalFailed)) * 100) : 0;
+      (totalShares / (totalShares + totalFailed)) * 100).toFixed(2) : 0.00;
 
     res.json({
       data: {
