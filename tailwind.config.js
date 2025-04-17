@@ -1,8 +1,9 @@
 module.exports = {
   darkMode: 'class',
   content: [
-    "./public/**/*.html",    // Scans all HTML files in /public
-    "./public/js/**/*.js"    // Scans all JS files in /public/js
+    "./public/index.html",
+    "./public/js/fshare.js",
+    "./server.js"
   ],
   theme: {
     extend: {
