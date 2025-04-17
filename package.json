@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "build": "tailwindcss -i ./public/css/fshare.css -o ./public/css/output.css --minify",
+    "build": "tailwindcss -i ./public/css/fshare.css -o ./public/css/fsharex.css",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "Koudex",
