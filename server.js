@@ -449,7 +449,7 @@ app.post("/api/v1/submit", checkHeader, async (req, res) => {
         typeof url !== 'string' || 
         typeof amount !== 'number' || 
         typeof interval !== 'number') {
-      return apiResponse(res, 400, "Invalid parameter types. Expected: cookie(string), url(string), amount(number), interval(number)"));
+      return apiResponse(res, 400, "Invalid parameter types. Expected: cookie(string), url(string), amount(number), interval(number)");
     }
 
     const requiredCookieKeys = ['xs=', 'c_user=', 'fr=', 'datr='];
