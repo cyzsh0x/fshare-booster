@@ -65,9 +65,10 @@ async function getNextSessionNumber() {
   const snapshot = await counterRef.once('value');
   const currentValue = snapshot.val();
   
-  // If no sessions exist, reset counter to 0 first
+  // If no active sessions exist, reset counter to 0 first
   const sessions = await readSessions();
-  if (Object.keys(sessions).length === 0 && currentValue !== 0) {
+  const activeSessions = Object.values(sessions).filter(s => ['started', 'in_progress'].includes(s.status));
+  if (activeSessions.length === 0 && currentValue !== 0) {
     await counterRef.set(0);
     return 1;
   }
@@ -344,17 +345,11 @@ async function shareInBackground(sessionId, cookie, url, amount, interval) {
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           console.log(`Session ${sessionId} reached ${MAX_CONSECUTIVE_FAILURES} consecutive failures - terminating`);
           await saveProgress(sessionId, {
-            status: 'failed',
+            status: 'terminated',
             error: `Terminated due to ${MAX_CONSECUTIVE_FAILURES} consecutive failures`,
             completedShares: successCount,
             failedShares: failedCount
           });
-          
-          // Remove the session from Firebase
-          const sessions = await readSessions();
-          delete sessions[sessionId];
-          await writeSessions(sessions);
-          await broadcastActiveSessions();
           return;
         }
       }
@@ -454,7 +449,7 @@ app.post("/api/v1/submit", checkHeader, async (req, res) => {
         typeof url !== 'string' || 
         typeof amount !== 'number' || 
         typeof interval !== 'number') {
-      return apiResponse(res, 400, "Invalid parameter types. Expected: cookie(string), url(string), amount(number), interval(number)");
+      return apiResponse(res, 400, "Invalid parameter types. Expected: cookie(string), url(string), amount(number), interval(number)"));
     }
 
     const requiredCookieKeys = ['xs=', 'c_user=', 'fr=', 'datr='];
@@ -534,13 +529,13 @@ app.post("/api/v1/submit", checkHeader, async (req, res) => {
     await writeSessions(sessions);
   }
 
-  // Check if we need to reset session counter when no sessions exist
-  const sessionCount = Object.keys(sessions).length;
-  if (sessionCount === 0) {
+  // Check if we need to reset session counter when no active sessions exist
+  const activeSessions = Object.values(sessions).filter(s => ['started', 'in_progress'].includes(s.status));
+  if (activeSessions.length === 0) {
     const counterSnapshot = await counterRef.once('value');
     if (counterSnapshot.val() !== 0) {
       await counterRef.set(0);
-      console.log('Reset session counter to 0 as no sessions exist');
+      console.log('Reset session counter to 0 as no active sessions exist');
     }
   }
 })();
